@@ -176,9 +176,9 @@ export interface IssuerDetail {
   unassignedManagers: PropertyManagerRef[];
 }
 export interface Subscription {
-  id: string; reference: string; wallet: string; offering_id: string; token_symbol: string;
-  amount_fiat: string; currency: string; tokens: number; status: string;
-  payment_provider: string; tx_hash: string | null; created_at: string;
+  id: string; reference: string; wallet: string; offeringId: string; tokenSymbol: string;
+  amountFiat: string; currency: string; tokens: number; status: string;
+  paymentProvider: string; txHash: string | null; createdAt: string;
 }
 
 export const api = {
@@ -204,7 +204,8 @@ export const api = {
   audit: () => get<AuditRow[]>("/api/admin/audit?limit=60"),
   operations: (status?: string) =>
     get<OperationRequest[]>(`/api/admin/operations${status ? `?status=${status}` : ""}`),
-  subscriptions: () => get<Subscription[]>("/api/subscriptions"),
+  subscriptions: () =>
+    get<{ items: Subscription[] }>("/api/admin/subscriptions").then((r) => r.items),
   offerings: () => get<any[]>("/api/admin/offerings"),
   offeringDetail: (id: string) => get<any>(`/api/admin/offerings/${id}`),
   uploadImage: (dataUrl: string) => post<{ url: string }>("/api/uploads", { dataUrl }),

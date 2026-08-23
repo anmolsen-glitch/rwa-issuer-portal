@@ -2244,7 +2244,7 @@ function CaseDetail({ id, status, flash, refresh, rk, tokens }: { id: string; st
 function Orders({ rk, refresh }: { rk: number; refresh: () => void }) {
   const [subs, loading, error] = useAsync(() => api.subscriptions(), [rk], [] as Subscription[]);
   const settled = subs.filter((s) => s.status === "settled");
-  const raised = settled.reduce((s, x) => s + Number(x.amount_fiat), 0);
+  const raised = settled.reduce((s, x) => s + Number(x.amountFiat), 0);
   const pg = usePaged(subs, 8);
   return (
     <>
@@ -2259,7 +2259,7 @@ function Orders({ rk, refresh }: { rk: number; refresh: () => void }) {
           <div className="tbl-wrap"><table className="tbl">
             <thead><tr><th>Order</th><th>Investor</th><th className="num">Amount</th><th className="num">Tokens</th><th>Status</th><th>Tx</th></tr></thead>
             <tbody>{pg.slice.map((s) => (
-              <tr key={s.id}><td className="mono">{s.reference.slice(0, 14)}…</td><td className="mono muted">{short(s.wallet)}</td><td className="num strong">{inr(Number(s.amount_fiat))}</td><td className="num">{s.tokens} {s.token_symbol}</td><td><Pill>{s.status}</Pill></td><td className="mono muted"><TxLink hash={s.tx_hash} /></td></tr>
+              <tr key={s.id}><td className="mono">{s.reference.slice(0, 14)}…</td><td className="mono muted">{short(s.wallet)}</td><td className="num strong">{inr(Number(s.amountFiat))}</td><td className="num">{s.tokens} {s.tokenSymbol}</td><td><Pill>{s.status}</Pill></td><td className="mono muted"><TxLink hash={s.txHash} /></td></tr>
             ))}</tbody>
           </table></div><Pager p={pg} />
         </>) : <Empty icon="receipt" text="No orders yet." />}
