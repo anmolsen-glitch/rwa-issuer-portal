@@ -9,12 +9,9 @@
 // anything not yet ported back to the Express app on :4000, so nothing is lost.
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:4100";
 
-// Three calls below deliberately keep their OLD (Express) paths:
-//   /api/subscriptions            admin order reconciliation — not ported
-//   /api/issuers/:id/assets       deploy-suite + create-offering wrapper — not ported
-//   /api/uploads                  image upload — not ported
-// Nest proxies anything it does not serve back to the Express app, so they keep
-// working. When each is ported, move it under /api/admin/* with the rest.
+// All calls go to the Nest backend (2026-08-23): orders moved to
+// /api/admin/subscriptions, asset creation to /api/admin/issuers/:id/assets,
+// and /api/uploads is served by Nest directly.
 
 const FLAG_KEY = "rwa_admin_session";
 let loggedIn = localStorage.getItem(FLAG_KEY) === "1";
@@ -240,7 +237,7 @@ export const api = {
   updateIssuer: (id: string, b: any) => patch<Issuer>(`/api/admin/issuers/${id}`, b),
   approveKyb: (id: string, ownerWallet?: string) => post(`/api/admin/issuers/${id}/approve-kyb`, { ownerWallet }),
   rejectKyb: (id: string, note: string) => post(`/api/admin/issuers/${id}/reject-kyb`, { note }),
-  createAsset: (id: string, b: any) => post(`/api/issuers/${id}/assets`, b),
+  createAsset: (id: string, b: any) => post(`/api/admin/issuers/${id}/assets`, b),
   issuerDetail: (id: string) => get<IssuerDetail>(`/api/admin/issuers/${id}`),
   spvTypes: () => get<{ types: string[] }>("/api/admin/issuers/spv-types"),
   // SPV managers (oversee an SPV's property managers)
