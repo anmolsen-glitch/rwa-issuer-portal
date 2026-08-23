@@ -70,6 +70,20 @@ const post = <T>(p: string, b?: unknown) => req<T>("POST", p, b);
 const patch = <T>(p: string, b?: unknown) => req<T>("PATCH", p, b);
 const del = <T>(p: string) => req<T>("DELETE", p);
 
+// ---- Nest response adapters -------------------------------------------------
+// The Nest backend wraps lists in { items } and returns camelCase keys.
+// Adapt HERE, in one place, so the views keep the legacy shapes they were
+// built against. snakeRow converts TOP-LEVEL keys only: nested objects
+// (details, params, kyc_details) are freeform JSON whose keys must not change.
+const items = <T>(p: Promise<{ items: T[] }>) => p.then((r) => r.items ?? []);
+const snakeRow = <T = any>(row: any): T => {
+  const out: any = {};
+  for (const [k, v] of Object.entries(row ?? {})) out[k.replace(/[A-Z]/g, (c) => "_" + c.toLowerCase())] = v;
+  return out;
+};
+const snakeRows = <T = any>(p: Promise<{ items: any[] }>): Promise<T[]> =>
+  items(p).then((rows) => rows.map((r) => snakeRow<T>(r)));
+
 // ---- types ----
 export interface Admin { id: string; email: string; role: string; name?: string | null; disabled?: boolean; created_at?: string; }
 export interface Manager { id: string; name: string; company: string | null; bio: string | null; contactEmail: string | null; status: "active" | "suspended"; hasLogin: boolean; createdAt: string; }
@@ -185,7 +199,7 @@ export const api = {
   logout: () => post("/api/admin/auth/logout", {}),
   me: () => get<{ admin: Admin }>("/api/admin/auth/me"),
   // team / sub-admin management (issuer_admin only)
-  admins: () => get<Admin[]>("/api/admin/team"),
+  admins: () => snakeRows<Admin>(get("/api/admin/team")),
   createAdmin: (b: { email: string; password: string; role: string; name?: string }) =>
     post<Admin>("/api/admin/team", b),
   updateAdmin: (id: string, b: { disabled?: boolean; role?: string }) =>
@@ -193,17 +207,17 @@ export const api = {
   // reads
   health: () => get<Health>("/api/health"),
   config: () => get<{ network: string; chainId: number; explorerUrl: string }>("/api/config"),
-  tokens: () => get<TokenInfo[]>("/api/admin/tokens"),
+  tokens: () => items<TokenInfo>(get("/api/admin/tokens")),
   capTable: (s: string) => get<CapTable>(`/api/admin/tokens/${s}/cap-table`),
-  transfers: (s: string) => get<TransferRow[]>(`/api/admin/tokens/${s}/transfers?limit=25`),
-  investors: () => get<Investor[]>("/api/admin/investors"),
+  transfers: (s: string) => items<TransferRow>(get(`/api/admin/tokens/${s}/transfers?limit=25`)),
+  investors: () => snakeRows<Investor>(get("/api/admin/investors")),
   investorDetail: (wallet: string) => get<InvestorDetail>(`/api/admin/investors/${wallet}`),
-  audit: () => get<AuditRow[]>("/api/admin/audit?limit=60"),
+  audit: () => snakeRows<AuditRow>(get("/api/admin/audit?limit=60")),
   operations: (status?: string) =>
-    get<OperationRequest[]>(`/api/admin/operations${status ? `?status=${status}` : ""}`),
+    snakeRows<OperationRequest>(get(`/api/admin/operations${status ? `?status=${status}` : ""}`)),
   subscriptions: () =>
     get<{ items: Subscription[] }>("/api/admin/subscriptions").then((r) => r.items),
-  offerings: () => get<any[]>("/api/admin/offerings"),
+  offerings: () => items<any>(get("/api/admin/offerings")),
   offeringDetail: (id: string) => get<any>(`/api/admin/offerings/${id}`),
   uploadImage: (dataUrl: string) => post<{ url: string }>("/api/uploads", { dataUrl }),
   updateOffering: (id: string, b: any) => patch<any>(`/api/admin/offerings/${id}`, b),
@@ -211,9 +225,9 @@ export const api = {
     post<any>(`/api/admin/offerings/${id}/deploy-token`, b),
   recordValuation: (id: string, totalValue: number, note?: string) =>
     post<any>(`/api/admin/offerings/${id}/valuations`, { totalValue, note }),
-  valuations: (id: string) => get<any[]>(`/api/admin/offerings/${id}/valuations`),
+  valuations: (id: string) => items<any>(get(`/api/admin/offerings/${id}/valuations`)),
   // property managers
-  managers: () => get<Manager[]>("/api/admin/managers"),
+  managers: () => items<Manager>(get("/api/admin/managers")),
   createManager: (b: { name: string; company?: string; bio?: string; contactEmail?: string; loginEmail?: string; loginPassword?: string }) =>
     post<Manager>("/api/admin/managers", b),
   updateManager: (id: string, b: { status?: string; name?: string; company?: string; bio?: string; contactEmail?: string }) =>
@@ -223,16 +237,16 @@ export const api = {
   openBuyback: (offeringId: string, b: { sellerWallet?: string; pricePerToken: number; maxTokens?: number | null }) =>
     post(`/api/admin/offerings/${offeringId}/buyback`, b),
   closeBuyback: (offeringId: string) => del(`/api/admin/offerings/${offeringId}/buyback`),
-  proposals: (offeringId: string) => get<any[]>(`/api/admin/offerings/${offeringId}/proposals`),
+  proposals: (offeringId: string) => items<any>(get(`/api/admin/offerings/${offeringId}/proposals`)),
   createProposal: (offeringId: string, b: { proposedManagerId: string; reason?: string; closesAt: string }) =>
     post(`/api/admin/offerings/${offeringId}/proposals`, b),
   closeProposal: (proposalId: string) => post(`/api/admin/proposals/${proposalId}/close`, {}),
-  myProperties: () => get<any[]>("/api/admin/managers/me/offerings"),
-  propertyUpdates: (offeringId: string) => get<any[]>(`/api/admin/offerings/${offeringId}/updates`),
+  myProperties: () => items<any>(get("/api/admin/managers/me/offerings")),
+  propertyUpdates: (offeringId: string) => items<any>(get(`/api/admin/offerings/${offeringId}/updates`)),
   postPropertyUpdate: (offeringId: string, b: { title: string; body: string }) =>
     post(`/api/admin/offerings/${offeringId}/updates`, b),
   // issuers (SPV onboarding + asset creation)
-  issuers: () => get<Issuer[]>("/api/admin/issuers"),
+  issuers: () => snakeRows<Issuer>(get("/api/admin/issuers")),
   registerIssuer: (b: any) => post<Issuer>("/api/admin/issuers", b),
   updateIssuer: (id: string, b: any) => patch<Issuer>(`/api/admin/issuers/${id}`, b),
   approveKyb: (id: string, ownerWallet?: string) => post(`/api/admin/issuers/${id}/approve-kyb`, { ownerWallet }),
@@ -247,24 +261,32 @@ export const api = {
   assignPropertyManager: (smId: string, managerId: string, attach: boolean) =>
     post(`/api/admin/spv-managers/${smId}/managers/${managerId}`, { attach }),
   // legal cases (court orders)
-  cases: () => get<LegalCase[]>("/api/admin/cases"),
+  cases: () => snakeRows<LegalCase>(get("/api/admin/cases")),
   openCase: (b: any) => post<LegalCase>("/api/admin/cases", b),
-  caseDetail: (id: string) => get<LegalCase>(`/api/admin/cases/${id}`),
+  caseDetail: (id: string) => get<any>(`/api/admin/cases/${id}`).then((c) => snakeRow<LegalCase>(c)),
   closeCase: (id: string) => post(`/api/admin/cases/${id}/close`, {}),
   recover: (id: string, b: any) => post(`/api/admin/cases/${id}/recover`, b),
   // investor lifecycle (admin side)
   onboard: (b: any) => post("/api/admin/onboarding/prepare", b),
-  pendingKyc: () => get<Investor[]>("/api/admin/kyc/pending"),
+  pendingKyc: () =>
+    items<any>(get("/api/admin/kyc/pending")).then((rows) =>
+      rows.map((r) => ({
+        // The account id doubles as the :subject for approve/reject calls.
+        wallet: r.accountId, name: r.name, email: r.email, country: r.country,
+        kyc_status: r.kycStatus, kyc_submitted_at: r.submittedAt,
+        onchainid: null, verified: false, created_at: r.updatedAt,
+      }) as unknown as Investor),
+    ),
   approveKyc: (wallet: string, b: any) => post(`/api/admin/kyc/${wallet}/approve`, b),
   rejectKyc: (wallet: string, note: string) => post(`/api/admin/kyc/${wallet}/reject`, { note }),
   startVerifyingKyc: (wallet: string) => post(`/api/admin/kyc/${wallet}/start-verifying`, {}),
-  amlHistory: (wallet: string) => get<AmlScreening[]>(`/api/admin/aml/${wallet}`),
+  amlHistory: (wallet: string) => get<{ items: any[] }>(`/api/admin/aml/${wallet}`).then((r) => (r.items ?? []).map((x) => snakeRow<AmlScreening>(x))),
   amlRescreen: (wallet: string) => post<{ amlStatus: string }>(`/api/admin/aml/${wallet}/rescreen`, {}),
-  kycDocuments: (wallet: string) => get<KycDocument[]>(`/api/admin/kyc/${wallet}/documents`),
+  kycDocuments: (wallet: string) => snakeRows<KycDocument>(get(`/api/admin/kyc/${wallet}/documents`)),
   // The document bytes are served inline behind the auth cookie; fetch as a blob
   // (cross-origin needs credentials) and hand back an object URL the UI can open.
   kycDocumentBlobUrl: async (id: string) => {
-    const r = await fetch(`${BASE}/api/kyc-documents/${id}`, { credentials: "include" });
+    const r = await fetch(`${BASE}/api/admin/kyc/documents/${id}`, { credentials: "include" });
     if (!r.ok) throw new ApiError(r.status, `Could not load document (${r.status})`);
     return URL.createObjectURL(await r.blob());
   },
