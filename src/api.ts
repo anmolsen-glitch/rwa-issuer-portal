@@ -191,7 +191,7 @@ export const api = {
   updateAdmin: (id: string, b: { disabled?: boolean; role?: string }) =>
     patch<Admin>(`/api/admin/team/${id}`, b),
   // reads
-  health: () => get<Health>("/health"),
+  health: () => get<Health>("/api/health"),
   config: () => get<{ network: string; chainId: number; explorerUrl: string }>("/api/config"),
   tokens: () => get<TokenInfo[]>("/api/admin/tokens"),
   capTable: (s: string) => get<CapTable>(`/api/admin/tokens/${s}/cap-table`),
