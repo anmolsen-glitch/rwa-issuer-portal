@@ -59,7 +59,14 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
   });
   const j: any = await r.json().catch(() => ({}));
   if (!r.ok) {
-    const msg = j?.error ? j.error + (j.detail ? `: ${j.detail}` : "") : r.statusText;
+    /* Nest envelope: { error: { code, message } }; legacy string kept as a
+       fallback so errors never render as "[object Object]". */
+    const msg =
+      j?.error && typeof j.error === "object"
+        ? (j.error.message ?? j.error.code ?? r.statusText)
+        : j?.error
+          ? j.error + (j.detail ? `: ${j.detail}` : "")
+          : r.statusText;
     if (r.status === 401 && path !== "/api/admin/auth/login") onUnauthorized?.();
     throw new ApiError(r.status, msg);
   }
