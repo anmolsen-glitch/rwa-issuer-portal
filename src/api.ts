@@ -225,9 +225,77 @@ export const api = {
   subscriptions: () =>
     get<{ items: Subscription[] }>("/api/admin/subscriptions").then((r) => r.items),
   offerings: () => items<any>(get("/api/admin/offerings")),
-  offeringDetail: (id: string) => get<any>(`/api/admin/offerings/${id}`),
+  offeringDetail: async (id: string) => {
+    const d = await get<any>(`/api/admin/offerings/${id}`);
+    if (!d) return null;
+    if (d.property && d.listing) return d;
+    return {
+      ...d,
+      property: {
+        name: d.name,
+        location: d.location,
+        propertyType: d.propertyType,
+        assetType: d.assetType,
+        value: d.currentValuation,
+        description: d.description,
+        images: d.images?.length ? d.images : d.image ? [d.image] : [],
+      },
+      listing: {
+        status: d.status,
+        currency: d.currency,
+        pricePerToken: d.pricePerToken,
+        targetRaise: d.targetRaise,
+        minInvestment: d.minInvestment,
+        maxInvestment: d.maxInvestment,
+        yieldPct: d.yieldPct,
+        visibility: d.visibility,
+      },
+      token: {
+        deployed: d.live || !!d.tokenSymbol || !!d.tokenAddress,
+        symbol: d.tokenSymbol,
+        totalTokens: d.tokensTotal,
+        address: d.tokenAddress,
+        network: d.network ?? "sepolia",
+        plan: {
+          symbol: d.tokenSymbol,
+          tokenName: d.name,
+          maxHolders: 500,
+          lockupDays: d.lockupDays ?? 0,
+        },
+      },
+      documents: d.documents ?? [],
+      issuer: d.issuerId
+        ? {
+            id: d.issuerId,
+            name: d.issuerName ?? "Issuer SPV",
+            spvId: null,
+            spvType: null,
+            ownerWallet: d.owner,
+            kybStatus: "approved",
+          }
+        : null,
+      manager: d.manager,
+    };
+  },
   uploadImage: (dataUrl: string) => post<{ url: string }>("/api/uploads", { dataUrl }),
-  updateOffering: (id: string, b: any) => patch<any>(`/api/admin/offerings/${id}`, b),
+  updateOffering: async (id: string, b: any) => {
+    const { status, tokenSymbol, visibility, ...patchFields } = b;
+    let res: any = null;
+    if (status) {
+      res = await post(`/api/admin/offerings/${id}/status`, { status });
+    }
+    const cleanPatch: Record<string, any> = {};
+    for (const [k, v] of Object.entries(patchFields)) {
+      if (v !== undefined && v !== null && v !== "") {
+        if (typeof v === "number") cleanPatch[k] = String(v);
+        else cleanPatch[k] = v;
+      }
+    }
+    if (Object.keys(cleanPatch).length > 0) {
+      res = await patch(`/api/admin/offerings/${id}`, cleanPatch);
+    }
+    return res;
+  },
   deployTokenForOffering: (id: string, b: { issuerId: string; symbol: string; maxHolders?: number; lockupDays?: number }) =>
     post<any>(`/api/admin/offerings/${id}/deploy-token`, b),
   recordValuation: (id: string, totalValue: number, note?: string) =>
