@@ -124,9 +124,12 @@ function Console({ admin, onLogout }: { admin: Admin; onLogout: () => void }) {
   const flash: Flash = (ok, msg) => { setToast({ ok, msg }); setTimeout(() => setToast(null), 5000); };
   const refresh = useCallback(() => setRk((k) => k + 1), []);
 
+  const [shellLoading, setShellLoading] = useState(true);
+
   const loadShell = useCallback(async () => {
     const [h, ts, pend] = await Promise.all([api.health().catch(() => null), api.tokens().catch(() => []), api.operations("pending").catch(() => [])]);
     setHealth(h); setTokens(ts); setPending(pend.length); setSymbol((s) => s || ts[0]?.symbol || "");
+    setShellLoading(false);
   }, []);
   useEffect(() => { loadShell(); const id = setInterval(loadShell, 15000); return () => clearInterval(id); }, [loadShell, rk]);
   useEffect(() => { api.config().then((c) => setExplorerUrl(c.explorerUrl)).catch(() => {}); }, []);
@@ -184,7 +187,9 @@ function Console({ admin, onLogout }: { admin: Admin; onLogout: () => void }) {
         </div>
 
         <div className="content">
-          {!connected ? (
+          {shellLoading ? (
+            <Loading />
+          ) : !connected ? (
             <Empty icon="gear" text={<>Backend offline. Start it with <span className="mono">npm run dev</span> in <span className="mono">rwa-token-backend</span>.</>} />
           ) : tokens.length === 0 && view !== "team" && view !== "managers" && view !== "offerings" && view !== "issuers" ? (
             <Empty icon="building" text={<>No assets deployed yet. Use <b>Issuers → Create asset</b>.</>} />
@@ -943,35 +948,23 @@ function IssuerReview({ issuer, flash, done }: { issuer: Issuer; flash: Flash; d
     </div>
   );
 }
-const ASSET_STEPS = ["Add Property", "Documents", "Token", "List Asset"];
+const ASSET_STEPS = ["Add Property", "Documents", "List Asset"];
 const ASSET_DOCS = ["Title Deed", "Valuation Report", "SPV Ownership Proof"];
 // Currency symbol for the money labels. The offering stores the code; this is display only.
 const CCY: Record<string, string> = { INR: "\u20b9", AED: "AED", USD: "$", EUR: "\u20ac", GBP: "\u00a3", SGD: "S$" };
 
 /**
- * Create-asset wizard. Four steps mirroring how an asset actually comes to market:
- * describe the property, evidence it, define the token, then set listing terms.
- *
- * Almost every field already existed on the offering — this reorganises them and
- * adds only what was genuinely missing (gallery images, documents, a token name
- * distinct from the listing name, and an explicit listing status). Total tokens is
- * DERIVED from raise / price rather than entered twice: the backend enforces the
- * same relationship, so letting them drift here would just produce a 400.
+ * Create-asset wizard. Three steps: describe the property, evidence it, then
+ * set listing terms. Token configuration (symbol, price, holders, lockup) is
+ * done later from the Offerings detail page → Tokenomics section.
  */
 function CreateAsset({ issuerId, flash, done }: { issuerId: string; flash: Flash; done: () => void }) {
   const [step, setStep] = useState(0);
-  const [cfg] = useAsync(() => api.config(), [], null as { network: string; chainId: number } | null);
   const [f, setF] = useState<Record<string, string>>({
     // step 1 — property
     name: "", propertyType: "commercial", assetType: "Commercial Real Estate", location: "",
-    propertyValue: "", currency: "INR", image: "", gallery: "", occupancyPct: "", description: "",
-    // step 3 — token
-    // Listing/token amounts are BLANK, not hardcoded — the operator enters each
-    // one per asset. maxHolders/lockup keep sensible technical defaults (not part
-    // of the priced listing terms).
-    tokenName: "", symbol: "", pricePerToken: "", maxHolders: "500", lockupDays: "180",
-    // step 4 — listing. targetRaise DERIVES from the property value (below) unless
-    // overridden; min/max are per-investor limits.
+    image: "", gallery: "", occupancyPct: "", description: "",
+    // step 3 — listing
     listingName: "", targetRaise: "", minInvestment: "", maxInvestment: "",
     yieldPct: "", status: "open", country: "356", visibility: "public",
     requiresAccreditation: "no", accreditedMaxInvestment: "",
@@ -985,50 +978,36 @@ function CreateAsset({ issuerId, flash, done }: { issuerId: string; flash: Flash
 
   const accreditedOnly = f.requiresAccreditation === "yes";
   const ownerOccupied = f.ownerOccupied === "yes";
-  const sym = CCY[f.currency] ?? f.currency;
-  const price = +f.pricePerToken || 0;
-  const propertyValue = +f.propertyValue || 0;
-  // Total offering defaults to the property value (whole-property raise) unless the
-  // operator overrides it — so it always reflects THIS asset, never a stale default.
-  const raise = +f.targetRaise || propertyValue;
-  // The single source of truth for supply; shown, never typed.
-  const totalTokens = price > 0 ? Math.round(raise / price) : 0;
+  const sym = "\u20b9"; // fixed INR
+  const raise = +f.targetRaise || 0;
   const gallery = f.gallery.split(/[\n,]/).map((u) => u.trim()).filter(Boolean);
 
   const valid = [
-    () => f.name.trim() && f.location.trim() && +f.propertyValue > 0,
+    () => f.name.trim() && f.location.trim(),
     () => docs.every((d) => d.url.trim()),
-    () => f.symbol.trim() && f.tokenName.trim() && price > 0,
-    () => raise > 0 && totalTokens > 0,
+    () => raise > 0 && (+f.minInvestment || 0) > 0,
   ];
   const HINTS = [
-    "Property name, location and value are required.",
+    "Property name and location are required.",
     "All three documents need a URL before an asset can be listed.",
-    "Token name, symbol and a price above zero are required.",
-    "Set a total offering and a minimum investment.",
+    "Set a target raise and minimum investment.",
   ];
   const next = () => { if (!valid[step]()) { flash(false, HINTS[step]); return; } setStep((s) => s + 1); };
 
-  // Creation ONLY runs from an explicit click on the Create button (onClick), never
-  // from a form submit / Enter — that was creating the asset without a manual click.
-  // The form's onSubmit is neutered (advance at most), so Enter can't create.
   const go = async () => {
-    if (!valid[3]()) { flash(false, HINTS[3]); return; }
+    if (!valid[2]()) { flash(false, HINTS[2]); return; }
     setBusy(true);
     try {
       await api.createAsset(issuerId, {
-        // token
-        symbol: f.symbol.trim().toUpperCase(), tokenName: f.tokenName.trim(), totalTokens,
-        pricePerToken: price, maxHolders: +f.maxHolders, lockupDays: +f.lockupDays,
         // property
         name: (f.listingName.trim() || f.name.trim()), location: f.location, assetType: f.assetType,
-        propertyType: f.propertyType, propertyValue: +f.propertyValue,
+        propertyType: f.propertyType,
         description: f.description.trim() || null,
         image: f.image.trim() || gallery[0] || null, images: gallery,
         documents: docs.map((d) => ({ type: d.type, name: d.name.trim() || null, url: d.url.trim() })),
         occupancyPct: f.occupancyPct.trim() ? +f.occupancyPct : null,
         // listing. Blank min → one token; blank max → no cap.
-        currency: f.currency, targetRaise: raise, minInvestment: +f.minInvestment || price,
+        currency: "INR", targetRaise: raise, minInvestment: +f.minInvestment || 0,
         maxInvestment: +f.maxInvestment || null, yieldPct: +f.yieldPct || null, country: +f.country,
         status: f.status, visibility: f.visibility,
         requiresAccreditation: accreditedOnly,
@@ -1036,7 +1015,7 @@ function CreateAsset({ issuerId, flash, done }: { issuerId: string; flash: Flash
         ownerOccupied, sellerWallet: ownerOccupied ? f.sellerWallet.trim() || null : null,
         retainedPct: ownerOccupied && f.retainedPct.trim() ? +f.retainedPct : null,
       });
-      flash(true, `${f.listingName.trim() || f.name} created — deploy its token from Offerings`);
+      flash(true, `${f.listingName.trim() || f.name} created — configure its token from Offerings → View details`);
       done();
     } catch (e: any) { flash(false, e.message); } finally { setBusy(false); }
   };
@@ -1058,10 +1037,6 @@ function CreateAsset({ issuerId, flash, done }: { issuerId: string; flash: Flash
             {I("assetType", "Asset type (free text)")}
           </div>
           <Field label="Location"><input value={f.location} onChange={(e) => set("location", e.target.value)} placeholder="Dubai Marina, Dubai, UAE" /></Field>
-          <div className="row2">
-            <Field label="Currency"><select value={f.currency} onChange={(e) => set("currency", e.target.value)}>{Object.keys(CCY).map((c) => <option key={c}>{c}</option>)}</select></Field>
-            <Field label={`Property value (${sym})`}><input value={f.propertyValue} onChange={(e) => set("propertyValue", e.target.value)} placeholder="2500000" /></Field>
-          </div>
           <Field label="Primary image URL"><input value={f.image} onChange={(e) => set("image", e.target.value)} placeholder="https://…/marina-crest.jpg" /></Field>
           <Field label="More image URLs (one per line, or comma-separated)">
             <textarea rows={3} value={f.gallery} onChange={(e) => set("gallery", e.target.value)} placeholder={"https://…/lobby.jpg\nhttps://…/pool.jpg"} />
@@ -1091,32 +1066,11 @@ function CreateAsset({ issuerId, flash, done }: { issuerId: string; flash: Flash
 
       {step === 2 && (
         <div>
-          <div className="row2">
-            <Field label="Token name"><input value={f.tokenName} onChange={(e) => set("tokenName", e.target.value)} placeholder="Marina Crest Real Estate Token" /></Field>
-            <Field label="Symbol"><input value={f.symbol} onChange={(e) => set("symbol", e.target.value)} placeholder="MCRRE" /></Field>
-          </div>
-          <div className="row2">
-            <Field label={`Token price (${sym})`}><input value={f.pricePerToken} onChange={(e) => set("pricePerToken", e.target.value)} placeholder="e.g. 1000" /></Field>
-            <Field label="Total tokens (from raise ÷ price)"><input value={totalTokens ? totalTokens.toLocaleString() : "—"} readOnly /></Field>
-          </div>
-          <div className="muted" style={{ fontSize: 12, marginTop: -6, marginBottom: 10 }}>
-            Supply is derived from the total offering on the next step, so the two can never disagree. Change the price or the raise to change it.
-          </div>
-          <Field label="Blockchain"><input readOnly value={cfg ? `${cfg.network} (chain ${cfg.chainId})` : "loading…"} /></Field>
-          <div className="row2">{I("maxHolders", "Max holders")}{I("lockupDays", "Lockup (days)")}</div>
-        </div>
-      )}
-
-      {step === 3 && (
-        <div>
           <Field label="Listing name"><input value={f.listingName} onChange={(e) => set("listingName", e.target.value)} placeholder={f.name || "Marina Crest Residence"} /></Field>
           <div className="muted" style={{ fontSize: 12, marginTop: -6, marginBottom: 10 }}>Leave blank to use the property name.</div>
           <div className="row2">
-            <Field label={`Total offering (${sym})`}><input value={f.targetRaise} onChange={(e) => set("targetRaise", e.target.value)} placeholder={propertyValue ? String(propertyValue) : "property value"} /></Field>
-            <Field label={`Minimum investment (${sym})`}><input value={f.minInvestment} onChange={(e) => set("minInvestment", e.target.value)} placeholder={price ? String(price) : "e.g. one token"} /></Field>
-          </div>
-          <div className="muted" style={{ fontSize: 12, marginTop: -6, marginBottom: 10 }}>
-            Total offering defaults to the property value ({sym} {propertyValue.toLocaleString()}). Override it for a partial raise.
+            <Field label={`Target raise (${sym})`}><input value={f.targetRaise} onChange={(e) => set("targetRaise", e.target.value)} placeholder="2500000" /></Field>
+            <Field label={`Minimum investment (${sym})`}><input value={f.minInvestment} onChange={(e) => set("minInvestment", e.target.value)} placeholder="e.g. 1000" /></Field>
           </div>
           <div className="row2">
             <Field label="Expected rental yield %"><input value={f.yieldPct} onChange={(e) => set("yieldPct", e.target.value)} placeholder="e.g. 8.5" /></Field>
@@ -1132,10 +1086,8 @@ function CreateAsset({ issuerId, flash, done }: { issuerId: string; flash: Flash
           <Field label="Owner-occupied (seller keeps equity)"><select value={f.ownerOccupied} onChange={(e) => set("ownerOccupied", e.target.value)}><option value="no">No — full sale</option><option value="yes">Yes — seller retains a share and keeps earning rent</option></select></Field>
           {ownerOccupied && <div className="row2">{I("sellerWallet", "Seller wallet")}{I("retainedPct", "Retained equity %")}</div>}
           <div className="banner info" style={{ margin: "12px 0" }}><Icon name="building" size={14} />
-            Creates the listing only — nothing is deployed on-chain yet. It appears in <b style={{ margin: "0 4px" }}>Offerings</b> as
-            <b style={{ margin: "0 4px" }}>coming soon</b>; hit <b style={{ margin: "0 4px" }}>Deploy token</b> there to mint
-            {" "}<b>{totalTokens.toLocaleString()}</b> {f.symbol.toUpperCase() || "tokens"} at {sym} {price.toLocaleString()} = {sym} {raise.toLocaleString()}
-            {f.status === "open" ? ", which then goes live automatically." : "."}
+            Creates the listing only — nothing is deployed on-chain yet. Configure the token from
+            <b style={{ margin: "0 4px" }}>Offerings → View details → Tokenomics</b>, then deploy.
           </div>
         </div>
       )}
@@ -1143,7 +1095,7 @@ function CreateAsset({ issuerId, flash, done }: { issuerId: string; flash: Flash
       <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
         {step > 0 && <Btn kind="ghost" type="button" disabled={busy} onClick={() => setStep((s) => s - 1)}>Back</Btn>}
         <div style={{ marginLeft: "auto" }}>
-          {step < 3
+          {step < 2
             ? <Btn type="button" onClick={next}>Continue</Btn>
             : <Btn type="button" disabled={busy} onClick={go}>{busy ? "Creating…" : "Create asset"}</Btn>}
         </div>
@@ -1548,73 +1500,6 @@ function InviteAdmin({ flash, done }: { flash: Flash; done: () => void }) {
 
 /* ============ Managers (issuer_admin) ============ */
 /* ============ Offerings ============ */
-/* ============ Offering details ============ */
-/**
- * Read-only "View details" for one asset listing: property, documents, token (or
- * the plan for one, when it isn't deployed yet), listing terms, and the owning SPV
- * / manager. When there's no token, a shortcut hands off to the deploy modal.
- */
-function OfferingDetails({ id, onDeploy }: { id: string; onDeploy: () => void }) {
-  const [d, loading, error] = useAsync(() => api.offeringDetail(id), [id], null as any);
-  if (loading) return <Loading />;
-  if (error) return <LoadError error={error} retry={() => location.reload()} />;
-  if (!d) return null;
-  const money = (n: number | null) => (n == null ? "—" : `${d.listing.currency} ${Number(n).toLocaleString()}`);
-
-  return (
-    <div>
-      <div className="card-h" style={{ paddingLeft: 0 }}><span className="ci"><Icon name="building" size={16} /></span><h3>Property</h3>
-        <Pill tone={OFFERING_STATUS_TONE[d.listing.status] ?? "gray"}>{OFFERING_STATUS_LABEL[d.listing.status] ?? d.listing.status}</Pill></div>
-      <div className="row2"><Row k="Name" v={d.property.name} /><Row k="Location" v={d.property.location} /></div>
-      <div className="row2"><Row k="Property type" v={d.property.propertyType ?? d.property.assetType} /><Row k="Property value" v={money(d.property.value)} /></div>
-      {d.property.description && <Row k="Description" v={d.property.description} />}
-      {d.property.images?.length > 0 && (
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "8px 0" }}>
-          {d.property.images.map((u: string, i: number) => <img key={i} src={u} alt="" style={{ height: 64, borderRadius: 6, border: "1px solid var(--line)" }} />)}
-        </div>
-      )}
-
-      <div className="card-h" style={{ paddingLeft: 0, marginTop: 16 }}><span className="ci"><Icon name="shield" size={16} /></span><h3>Documents</h3><span className="hint">{d.documents.length}</span></div>
-      {d.documents.length ? d.documents.map((doc: any, i: number) => (
-        <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
-          <Icon name="shield" size={13} /><span className="strong">{doc.type}</span>
-          {doc.name && <span className="muted" style={{ fontSize: 12 }}>{doc.name}</span>}
-          <div style={{ marginLeft: "auto" }}>{doc.url ? <a href={doc.url} target="_blank" rel="noreferrer" style={{ color: "var(--blue)" }}>Open ↗</a> : <span className="muted">no file</span>}</div>
-        </div>
-      )) : <div className="muted" style={{ fontSize: 13 }}>No documents attached. Add them via <b>Edit</b>.</div>}
-
-      <div className="card-h" style={{ paddingLeft: 0, marginTop: 16 }}><span className="ci"><Icon name="gear" size={16} /></span><h3>Token</h3>
-        {d.token.deployed ? <Pill tone="cyan">{d.token.symbol}</Pill> : <Pill tone="gray">not deployed</Pill>}</div>
-      {d.token.deployed ? (
-        <>
-          <div className="row2"><Row k="Symbol" v={d.token.symbol} /><Row k="Total tokens" v={d.token.totalTokens.toLocaleString()} /></div>
-          <Row k="Contract" v={<ExplorerAddr addr={d.token.address} />} />
-          <Row k="Network" v={d.token.network} />
-        </>
-      ) : (
-        <>
-          <div className="banner info" style={{ margin: "6px 0 10px" }}><Icon name="building" size={14} />Not deployed yet. Planned: <b style={{ margin: "0 4px" }}>{d.token.plan?.symbol ?? "—"}</b>{d.token.plan?.tokenName ? ` · ${d.token.plan.tokenName}` : ""} · {d.token.totalTokens.toLocaleString()} tokens.</div>
-          <Btn sm onClick={onDeploy}><Icon name="plus" size={13} />Deploy token</Btn>
-        </>
-      )}
-
-      <div className="card-h" style={{ paddingLeft: 0, marginTop: 16 }}><span className="ci"><Icon name="list" size={16} /></span><h3>Listing</h3></div>
-      <div className="row2"><Row k="Price / token" v={money(d.listing.pricePerToken)} /><Row k="Total offering" v={money(d.listing.targetRaise)} /></div>
-      <div className="row2"><Row k="Minimum investment" v={money(d.listing.minInvestment)} /><Row k="Max / investor" v={money(d.listing.maxInvestment)} /></div>
-      <div className="row2"><Row k="Expected yield" v={d.listing.yieldPct == null ? "—" : `${d.listing.yieldPct}%`} /><Row k="Visibility" v={d.listing.visibility} /></div>
-
-      {d.issuer && (
-        <>
-          <div className="card-h" style={{ paddingLeft: 0, marginTop: 16 }}><span className="ci"><Icon name="building" size={16} /></span><h3>Issuer (SPV)</h3><Pill>{d.issuer.kybStatus}</Pill></div>
-          <div className="row2"><Row k="Name" v={d.issuer.name} /><Row k="SPV ID" v={d.issuer.spvId ?? "—"} /></div>
-          <div className="row2"><Row k="SPV type" v={d.issuer.spvType ?? "—"} /><Row k="Owner wallet" v={d.issuer.ownerWallet ? <ExplorerAddr addr={d.issuer.ownerWallet} /> : "—"} /></div>
-        </>
-      )}
-      {d.manager && <><div className="card-h" style={{ paddingLeft: 0, marginTop: 16 }}><span className="ci"><Icon name="users" size={16} /></span><h3>Manager</h3></div><Row k="Name" v={`${d.manager.name}${d.manager.company ? " · " + d.manager.company : ""}`} /></>}
-    </div>
-  );
-}
-
 const OFFERING_STATUS_TONE: Record<string, "green" | "amber" | "cyan" | "red" | "gray"> = { open: "green", coming_soon: "amber", funded: "cyan", cancelled: "red" };
 const OFFERING_STATUS_LABEL: Record<string, string> = { open: "Open", coming_soon: "Coming soon", funded: "Funded", cancelled: "Cancelled" };
 
@@ -1624,37 +1509,57 @@ function OfferingsView({ flash, refresh, rk }: { flash: Flash; refresh: () => vo
   const [offerings, loading, error] = useAsync(() => api.offerings(), [rk, k], [] as any[]);
   const [edit, setEdit] = useState<any | null>(null);
   const [deploy, setDeploy] = useState<any | null>(null);
-  const [details, setDetails] = useState<any | null>(null);
+  const [detailId, setDetailId] = useState<string | null>(null);
 
   const setStatus = async (o: any, status: string) => {
     try { await api.updateOffering(o.id, { status }); flash(true, `${o.name} → ${OFFERING_STATUS_LABEL[status] ?? status}`); bump(); refresh(); }
     catch (e: any) { flash(false, e.message); }
   };
 
+  // Full-page detail sub-view (replaces the modal)
+  const selected = detailId ? offerings.find((o) => o.id === detailId) : null;
+  if (detailId) {
+    return (
+      <>
+        <PageHead
+          title={selected?.name || "Offering details"}
+          sub={selected?.location || ""}
+          actions={<Btn kind="ghost" onClick={() => setDetailId(null)}>← Back to offerings</Btn>}
+        />
+        <OfferingDetailPage
+          id={detailId}
+          offering={selected}
+          flash={flash}
+          refresh={() => { bump(); refresh(); }}
+          onDeploy={() => { setDetailId(null); setDeploy(selected); }}
+        />
+      </>
+    );
+  }
+
   return (
     <>
       <PageHead title="Offerings" sub="Every asset offering — status, token link, and go-live control" />
-      <div className="banner info" style={{ marginBottom: 14 }}><Icon name="list" size={14} />An offering is investable only when it has a deployed token <b style={{ margin: "0 4px" }}>and</b> status Open. “Go live” flips a token-backed offering to Open.</div>
+      <div className="banner info" style={{ marginBottom: 14 }}><Icon name="list" size={14} />An offering is investable only when it has a deployed token <b style={{ margin: "0 4px" }}>and</b> status Open. "Go live" flips a token-backed offering to Open.</div>
       <Card pad={false}>
         {loading ? <Loading /> : error ? <LoadError error={error} retry={bump} /> : offerings.length ? (
           <div className="tbl-wrap"><table className="tbl">
-            <thead><tr><th>Property</th><th>Token</th><th>Status</th><th>Price</th><th>Funded</th><th>Visibility</th><th></th></tr></thead>
+            <thead><tr><th>Property</th><th>SPV / Issuer</th><th>Token</th><th>Status</th><th>Price</th><th>Funded</th><th></th></tr></thead>
             <tbody>{offerings.map((o) => (
               <tr key={o.id}>
                 <td className="strong">{o.name}<div className="muted" style={{ fontSize: 12 }}>{o.location ?? "—"}</div></td>
+                <td className="muted" style={{ fontSize: 12 }}>{o.issuerName ?? "—"}</td>
                 <td>
                   {o.tokenSymbol ? (
                     <div style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: "flex-start" }}>
                       <Pill tone="cyan">{o.tokenSymbol}</Pill>
                       <span style={{ fontSize: 11 }} className="muted">Contract <ExplorerAddr addr={o.tokenAddress} /></span>
-                      <span style={{ fontSize: 11 }} className="muted">Deployer <ExplorerAddr addr={o.owner} /></span>
                     </div>
                   ) : <Pill tone="gray">no token</Pill>}
                 </td>
                 <td><Pill tone={OFFERING_STATUS_TONE[o.status] ?? "gray"}>{OFFERING_STATUS_LABEL[o.status] ?? o.status}</Pill></td>
-                <td>{inr(o.pricePerToken)}</td>
+                <td>{o.pricePerToken > 0 ? inr(o.pricePerToken) : "—"}</td>
                 <td>{Math.round(o.pctFunded ?? 0)}%</td>
-                <td className="muted">{o.visibility}</td>
                 <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
                   {!o.tokenSymbol
                     ? <Btn sm onClick={() => setDeploy(o)}><Icon name="plus" size={13} />Deploy token</Btn>
@@ -1663,7 +1568,7 @@ function OfferingsView({ flash, refresh, rk }: { flash: Flash; refresh: () => vo
                       : o.status === "open"
                         ? <Btn sm kind="ghost" onClick={() => setStatus(o, "coming_soon")}>Unlist</Btn>
                         : null}
-                  <Btn sm kind="ghost" style={{ marginLeft: 6 }} onClick={() => setDetails(o)}>View details</Btn>
+                  <Btn sm kind="ghost" style={{ marginLeft: 6 }} onClick={() => setDetailId(o.id)}>View details</Btn>
                   <Btn sm kind="subtle" style={{ marginLeft: 6 }} onClick={() => setEdit(o)}>Edit</Btn>
                 </td>
               </tr>
@@ -1673,8 +1578,213 @@ function OfferingsView({ flash, refresh, rk }: { flash: Flash; refresh: () => vo
       </Card>
       {edit && <Modal wide title={`Edit — ${edit.name}`} onClose={() => setEdit(null)}><OfferingEdit o={edit} flash={flash} done={() => { setEdit(null); bump(); refresh(); }} /></Modal>}
       {deploy && <Modal title={`Deploy token — ${deploy.name}`} onClose={() => setDeploy(null)}><DeployTokenModal o={deploy} flash={flash} done={() => { setDeploy(null); bump(); refresh(); }} /></Modal>}
-      {details && <Modal wide title={`Asset details — ${details.name}`} onClose={() => setDetails(null)}><OfferingDetails id={details.id} onDeploy={() => { setDetails(null); setDeploy(details); }} /></Modal>}
     </>
+  );
+}
+
+/**
+ * Full-page offering detail — replaces the old modal. Sections:
+ * 1. Property 2. SPV/Issuer 3. Documents 4. Valuation & Yield 5. Tokenomics 6. Listing
+ */
+function OfferingDetailPage({ id, offering, flash, refresh, onDeploy }: {
+  id: string; offering: any; flash: Flash; refresh: () => void; onDeploy: () => void;
+}) {
+  const [d, loading, error] = useAsync(() => api.offeringDetail(id), [id], null as any);
+  const [vals, , vErr] = useAsync(() => api.valuations(id), [id], [] as any[]);
+  const [revalOpen, setRevalOpen] = useState(false);
+  const [cfg] = useAsync(() => api.config(), [], null as { network: string; chainId: number } | null);
+
+  // Token config state (for Tokenomics section when no token is deployed)
+  const [tf, setTf] = useState({ tokenName: "", symbol: "", pricePerToken: "", maxHolders: "500", lockupDays: "180" });
+  const setTF = (k: string, v: string) => setTf((s) => ({ ...s, [k]: v }));
+  const [saving, setSaving] = useState(false);
+
+  if (loading) return <Loading />;
+  if (error) return <LoadError error={error} retry={() => location.reload()} />;
+  if (!d) return null;
+
+  const prop = d.property ?? d;
+  const listing = d.listing ?? d;
+  const token = d.token ?? { deployed: !!d.tokenSymbol, symbol: d.tokenSymbol, totalTokens: d.tokensTotal, address: d.tokenAddress, network: d.network ?? "sepolia" };
+  const issuer = d.issuer;
+  const docs = d.documents ?? [];
+  const money = (n: number | null | undefined) => (n == null ? "—" : `₹${Number(n).toLocaleString("en-IN")}`);
+
+  const saveTokenConfig = async () => {
+    if (!tf.symbol.trim() || !tf.tokenName.trim() || !(+tf.pricePerToken > 0)) {
+      flash(false, "Token name, symbol, and a price above zero are required."); return;
+    }
+    setSaving(true);
+    try {
+      await api.updateOffering(id, {
+        tokenSymbol: null, // not linking yet
+        pricePerToken: +tf.pricePerToken,
+      });
+      flash(true, "Token configuration saved — you can now deploy the token.");
+      refresh();
+    } catch (e: any) { flash(false, e.message); } finally { setSaving(false); }
+  };
+
+  const price = offering?.pricePerToken ?? d.pricePerToken ?? listing?.pricePerToken ?? 0;
+  const raise = offering?.targetRaise ?? d.targetRaise ?? listing?.targetRaise ?? 0;
+  const totalTokens = price > 0 ? Math.round(raise / price) : 0;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {/* 1. Property */}
+      <Card>
+        <div className="card-h" style={{ paddingLeft: 0 }}><span className="ci"><Icon name="building" size={16} /></span><h3>Property</h3>
+          <Pill tone={OFFERING_STATUS_TONE[listing?.status ?? d.status] ?? "gray"}>{OFFERING_STATUS_LABEL[listing?.status ?? d.status] ?? (listing?.status ?? d.status)}</Pill>
+        </div>
+        <div className="row2"><Row k="Name" v={prop.name ?? d.name} /><Row k="Location" v={prop.location ?? d.location} /></div>
+        <div className="row2"><Row k="Property type" v={prop.propertyType ?? d.propertyType ?? prop.assetType ?? d.assetType} /><Row k="Asset type" v={prop.assetType ?? d.assetType ?? "—"} /></div>
+        {(prop.description ?? d.description) && <Row k="Description" v={prop.description ?? d.description} />}
+        {(prop.images?.length > 0 || d.images?.length > 0) && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "8px 0" }}>
+            {(prop.images ?? d.images ?? []).map((u: string, i: number) => <img key={i} src={u} alt="" style={{ height: 64, borderRadius: 6, border: "1px solid var(--line)" }} />)}
+          </div>
+        )}
+      </Card>
+
+      {/* 2. SPV / Issuer */}
+      {issuer && (
+        <Card>
+          <div className="card-h" style={{ paddingLeft: 0 }}><span className="ci"><Icon name="building" size={16} /></span><h3>SPV / Issuer</h3><Pill>{issuer.kybStatus}</Pill></div>
+          <div className="row2"><Row k="Name" v={issuer.name ?? d.issuerName ?? "—"} /><Row k="SPV ID" v={issuer.spvId ?? "—"} /></div>
+          <div className="row2"><Row k="SPV type" v={issuer.spvType ?? "—"} /><Row k="Owner wallet" v={issuer.ownerWallet ? <ExplorerAddr addr={issuer.ownerWallet} /> : "—"} /></div>
+        </Card>
+      )}
+
+      {/* 3. Documents */}
+      <Card>
+        <div className="card-h" style={{ paddingLeft: 0 }}><span className="ci"><Icon name="shield" size={16} /></span><h3>Documents</h3><span className="hint">{docs.length}</span></div>
+        {docs.length ? docs.map((doc: any, i: number) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
+            <Icon name="shield" size={13} /><span className="strong">{doc.type}</span>
+            {doc.name && <span className="muted" style={{ fontSize: 12 }}>{doc.name}</span>}
+            <div style={{ marginLeft: "auto" }}>{doc.url ? <a href={doc.url} target="_blank" rel="noreferrer" style={{ color: "var(--blue)" }}>Open ↗</a> : <span className="muted">no file</span>}</div>
+          </div>
+        )) : <div className="muted" style={{ fontSize: 13 }}>No documents attached. Add them via <b>Edit</b>.</div>}
+      </Card>
+
+      {/* 4. Valuation & Yield */}
+      <Card>
+        <div className="card-h" style={{ paddingLeft: 0 }}><span className="ci"><Icon name="coins" size={16} /></span><h3>Valuation & Yield</h3>
+          <div style={{ marginLeft: "auto" }}><Btn sm onClick={() => setRevalOpen(!revalOpen)}>{revalOpen ? "Cancel" : "Record appraisal"}</Btn></div>
+        </div>
+        <div className="row2">
+          <Row k="Current valuation" v={money(d.currentValuation ?? offering?.currentValuation)} />
+          <Row k="NAV / token" v={money(d.navPerToken ?? offering?.navPerToken)} />
+        </div>
+        <div className="row2">
+          <Row k="Appreciation" v={`${(d.appreciationPct ?? offering?.appreciationPct ?? 0) >= 0 ? "+" : ""}${d.appreciationPct ?? offering?.appreciationPct ?? 0}%`} />
+          <Row k="Yield (target / realized)" v={`${d.targetYieldPct ?? offering?.targetYieldPct ?? "—"}% / ${d.realizedYieldPct ?? offering?.realizedYieldPct ?? "—"}%`} />
+        </div>
+        {d.valuationUpdatedAt && <Row k="Last updated" v={fmtWhen(d.valuationUpdatedAt ?? offering?.valuationUpdatedAt)} />}
+
+        {revalOpen && (
+          <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, marginTop: 12 }}>
+            <RevalueInline offering={{ ...d, ...offering, id }} flash={flash} done={() => { setRevalOpen(false); refresh(); }} />
+          </div>
+        )}
+
+        {vals.length > 0 && (
+          <>
+            <div className="section-label" style={{ marginTop: 14 }}>Valuation history</div>
+            <div className="tbl-wrap"><table className="tbl">
+              <thead><tr><th>Date</th><th>Total value</th><th>NAV/token</th><th>Note</th></tr></thead>
+              <tbody>{vals.slice(0, 10).map((v: any, i: number) => (
+                <tr key={i}>
+                  <td className="muted">{fmtWhen(v.createdAt ?? v.created_at)}</td>
+                  <td>{money(v.totalValue ?? v.total_value)}</td>
+                  <td>{money(v.navPerToken ?? v.nav_per_token)}</td>
+                  <td className="muted" style={{ fontSize: 12 }}>{v.note ?? "—"}</td>
+                </tr>
+              ))}</tbody>
+            </table></div>
+          </>
+        )}
+      </Card>
+
+      {/* 5. Tokenomics */}
+      <Card>
+        <div className="card-h" style={{ paddingLeft: 0 }}><span className="ci"><Icon name="gear" size={16} /></span><h3>Tokenomics</h3>
+          {token.deployed ? <Pill tone="cyan">{token.symbol}</Pill> : <Pill tone="gray">not deployed</Pill>}
+        </div>
+        {token.deployed ? (
+          <>
+            <div className="row2"><Row k="Symbol" v={token.symbol} /><Row k="Total tokens" v={(token.totalTokens ?? totalTokens).toLocaleString()} /></div>
+            <Row k="Contract" v={<ExplorerAddr addr={token.address} />} />
+            <div className="row2"><Row k="Network" v={token.network} /><Row k="Price / token" v={money(price)} /></div>
+            <div className="row2">
+              <Row k="Tokens issued" v={(d.tokensIssued ?? offering?.tokensIssued ?? 0).toLocaleString()} />
+              <Row k="Tokens available" v={(d.tokensAvailable ?? offering?.tokensAvailable ?? totalTokens).toLocaleString()} />
+            </div>
+            <div className="row2">
+              <Row k="Holders" v={d.holders ?? offering?.holders ?? 0} />
+              <Row k="Lock-up" v={`${d.lockupDays ?? offering?.lockupDays ?? "—"} days`} />
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="banner info" style={{ margin: "8px 0 12px" }}><Icon name="building" size={14} />Configure the token parameters below, then deploy. Token config is separate from the property listing.</div>
+            <div className="row2">
+              <Field label="Token name"><input value={tf.tokenName} onChange={(e) => setTF("tokenName", e.target.value)} placeholder="Marina Crest Real Estate Token" /></Field>
+              <Field label="Symbol"><input value={tf.symbol} onChange={(e) => setTF("symbol", e.target.value)} placeholder="MCRRE" /></Field>
+            </div>
+            <div className="row2">
+              <Field label="Token price (₹)"><input value={tf.pricePerToken} onChange={(e) => setTF("pricePerToken", e.target.value)} placeholder="e.g. 1000" /></Field>
+              <Field label="Total tokens (from raise ÷ price)"><input value={+tf.pricePerToken > 0 ? Math.round(raise / +tf.pricePerToken).toLocaleString() : "—"} readOnly /></Field>
+            </div>
+            <div className="muted" style={{ fontSize: 12, marginTop: -6, marginBottom: 10 }}>
+              Supply is derived from the target raise (₹{Number(raise).toLocaleString("en-IN")}) ÷ price per token.
+            </div>
+            <Field label="Blockchain"><input readOnly value={cfg ? `${cfg.network} (chain ${cfg.chainId})` : "loading…"} /></Field>
+            <div className="row2">
+              <Field label="Max holders"><input value={tf.maxHolders} onChange={(e) => setTF("maxHolders", e.target.value)} /></Field>
+              <Field label="Lockup (days)"><input value={tf.lockupDays} onChange={(e) => setTF("lockupDays", e.target.value)} /></Field>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <Btn kind="ghost" disabled={saving} onClick={saveTokenConfig}>{saving ? "Saving…" : "Save config"}</Btn>
+              <Btn disabled={!tf.symbol.trim() || !(+tf.pricePerToken > 0)} onClick={onDeploy}><Icon name="plus" size={13} />Deploy token</Btn>
+            </div>
+          </>
+        )}
+      </Card>
+
+      {/* 6. Listing Terms */}
+      <Card>
+        <div className="card-h" style={{ paddingLeft: 0 }}><span className="ci"><Icon name="list" size={16} /></span><h3>Listing Terms</h3></div>
+        <div className="row2"><Row k="Price / token" v={money(listing?.pricePerToken ?? price)} /><Row k="Target raise" v={money(listing?.targetRaise ?? raise)} /></div>
+        <div className="row2"><Row k="Min investment" v={money(listing?.minInvestment ?? d.minInvestment)} /><Row k="Max / investor" v={money(listing?.maxInvestment ?? d.maxInvestment)} /></div>
+        <div className="row2"><Row k="Expected yield" v={listing?.yieldPct != null ? `${listing.yieldPct}%` : (d.yieldPct != null ? `${d.yieldPct}%` : "—")} /><Row k="Visibility" v={listing?.visibility ?? d.visibility} /></div>
+        {d.manager && <><div className="card-h" style={{ paddingLeft: 0, marginTop: 12 }}><span className="ci"><Icon name="users" size={16} /></span><h3>Manager</h3></div><Row k="Name" v={`${d.manager.name}${d.manager.company ? " · " + d.manager.company : ""}`} /></>}
+      </Card>
+    </div>
+  );
+}
+
+/** Inline revaluation form for the detail page. */
+function RevalueInline({ offering, flash, done }: { offering: any; flash: Flash; done: () => void }) {
+  const [value, setValue] = useState(String(offering.currentValuation ?? offering.targetRaise ?? ""));
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const tokensTotal = offering.tokensTotal || offering.totalTokens || 0;
+  const v = +value || 0;
+  const newNav = tokensTotal > 0 ? Math.round((v / tokensTotal) * 100) / 100 : 0;
+  const submit = async () => {
+    if (!(v > 0)) { flash(false, "Enter a positive value"); return; }
+    setBusy(true);
+    try { await api.recordValuation(offering.id, v, note || undefined); flash(true, `Revalued — NAV now ₹${newNav.toLocaleString("en-IN")}/token`); done(); }
+    catch (e: any) { flash(false, e.message); } finally { setBusy(false); }
+  };
+  return (
+    <div>
+      <Field label="New total valuation (₹)"><input value={value} onChange={(e) => setValue(e.target.value)} /></Field>
+      <div className="muted" style={{ fontSize: 13, margin: "6px 0 12px" }}>New NAV / token: <b>₹{newNav.toLocaleString("en-IN")}</b> (was ₹{(offering.navPerToken ?? 0).toLocaleString("en-IN")})</div>
+      <Field label="Note (optional)"><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Q3 appraisal" /></Field>
+      <Btn disabled={busy} onClick={submit}>{busy ? "Recording…" : "Record appraisal"}</Btn>
+    </div>
   );
 }
 
