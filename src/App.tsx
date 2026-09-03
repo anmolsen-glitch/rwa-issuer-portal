@@ -54,8 +54,11 @@ export default function App() {
     return () => setOnUnauthorized(null);
   }, []);
   useEffect(() => {
-    if (!getToken()) { setBooting(false); return; }
-    api.me().then((r) => setAdmin(r.admin)).catch(() => setToken(null)).finally(() => setBooting(false));
+    // Always try the httpOnly cookie first — localStorage is only a UI hint.
+    api.me()
+      .then((r) => { setToken("1"); setAdmin(r.admin); })
+      .catch(() => { setToken(null); setAdmin(null); })
+      .finally(() => setBooting(false));
   }, []);
   if (booting) return <div className="loading" style={{ minHeight: "100vh" }}><span className="spinner" /></div>;
   if (!admin) return <Login onLogin={setAdmin} />;
@@ -72,7 +75,7 @@ function Login({ onLogin }: { onLogin: (a: Admin) => void }) {
   const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
   const submit = async (e: FormEvent) => {
     e.preventDefault(); setBusy(true); setErr("");
-    try { const r = await api.login(email, password); setToken(r.token); onLogin(r.admin); }
+    try { const r = await api.login(email, password); setToken("1"); onLogin(r.admin); }
     catch (e: any) { setErr(e.message); } finally { setBusy(false); }
   };
   return (

@@ -16,11 +16,12 @@ const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:4100";
 const FLAG_KEY = "rwa_admin_session";
 let loggedIn = localStorage.getItem(FLAG_KEY) === "1";
 
-// Named setToken/getToken for call-site compatibility; they no longer touch the
-// JWT — `t` is only used as a truthy "logged in" signal.
+// Named setToken/getToken for call-site compatibility. Auth is cookie-based —
+// `t` is only a truthy "logged in" signal for localStorage; the real session is
+// the httpOnly cookie set by POST /api/admin/auth/login.
 export function setToken(t: string | null) {
   loggedIn = !!t;
-  if (t) localStorage.setItem(FLAG_KEY, "1");
+  if (loggedIn) localStorage.setItem(FLAG_KEY, "1");
   else localStorage.removeItem(FLAG_KEY);
 }
 export function getToken() {
@@ -202,7 +203,7 @@ export interface Subscription {
 export const api = {
   // auth
   login: (email: string, password: string) =>
-    post<{ token: string; admin: Admin }>("/api/admin/auth/login", { email, password }),
+    post<{ admin: Admin }>("/api/admin/auth/login", { email, password }),
   logout: () => post("/api/admin/auth/logout", {}),
   me: () => get<{ admin: Admin }>("/api/admin/auth/me"),
   // team / sub-admin management (issuer_admin only)
